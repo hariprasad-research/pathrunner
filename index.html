@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Path Runner</title>
+<style>
+  :root{
+    --bg-top:#1b1035;
+    --bg-bottom:#3a1d5c;
+    --accent:#ff5da2;
+    --accent2:#3ee6c4;
+    --platform:#5b3ea8;
+    --platform-top:#8a6ff0;
+    --text:#f5f2ff;
+    --danger:#ff4d4d;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    overflow:hidden; overscroll-behavior:none;
+    background:var(--bg-top);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    touch-action:none;
+    user-select:none;
+  }
+  #game-wrap{
+    position:relative;
+    width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center;
+  }
+  canvas{
+    display:block;
+    width:100%; height:100%;
+    touch-action:none;
+  }
+  #hud{
+    position:absolute; top:0; left:0; right:0;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:calc(10px + env(safe-area-inset-top,0px)) 16px 0 16px;
+    pointer-events:none;
+    z-index:5;
+  }
+  #score{
+    color:var(--text);
+    font-size:22px;
+    font-weight:700;
+    letter-spacing:0.5px;
+    text-shadow:0 2px 6px rgba(0,0,0,0.35);
+  }
+  #best{
+    color:rgba(245,242,255,0.65);
+    font-size:13px;
+    font-weight:600;
+    margin-top:2px;
+  }
+  #hint{
+    position:absolute;
+    left:50%; top:18%;
+    transform:translateX(-50%);
+    color:var(--text);
+    font-size:15px;
+    font-weight:600;
+    text-align:center;
+    background:rgba(20,10,40,0.45);
+    padding:10px 16px;
+    border-radius:14px;
+    backdrop-filter:blur(4px);
+    pointer-events:none;
+    z-index:5;
+    max-width:80%;
+    line-height:1.4;
+  }
+  .overlay{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:rgba(15,7,30,0.72);
+    backdrop-filter:blur(3px);
+    z-index:10;
+    text-align:center;
+    padding:24px;
+  }
+  .overlay h1{
+    color:var(--text);
+    font-size:34px;
+    margin:0 0 6px 0;
+    letter-spacing:0.5px;
+  }
+  .overlay p{
+    color:rgba(245,242,255,0.8);
+    font-size:15px;
+    margin:0 0 24px 0;
+    max-width:280px;
+    line-height:1.5;
+  }
+  .overlay .stat{
+    color:var(--accent2);
+    font-size:46px;
+    font-weight:800;
+    margin-bottom:4px;
+  }
+  .overlay .statlabel{
+    color:rgba(245,242,255,0.6);
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:1.5px;
+    margin-bottom:22px;
+  }
+  button.btn{
+    font-family:inherit;
+    background:linear-gradient(135deg,var(--accent),#ff8fc0);
+    color:#1b1035;
+    border:none;
+    padding:14px 34px;
+    font-size:17px;
+    font-weight:800;
+    border-radius:30px;
+    box-shadow:0 6px 18px rgba(255,93,162,0.45);
+    letter-spacing:0.5px;
+  }
+  button.btn:active{ transform:scale(0.96); }
+  #hidden{ display:none; }
+</style>
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div>
+      <div id="score">0m</div>
+      <div id="best">Best: 0m</div>
+    </div>
+  </div>
+
+  <div id="hint">Tap ahead to drop a platform — build over<br>or duck under the spikes to survive!</div>
+
+  <div class="overlay" id="startOverlay">
+    <h1>PATH RUNNER</h1>
+    <p>Your runner never stops. Tap anywhere on screen to build a platform just ahead of them — place it high to clear spikes, or leave a gap to duck under floating ones. Don't fall, don't crash.</p>
+    <button class="btn" id="startBtn">Start Running</button>
+  </div>
+
+  <div class="overlay" id="deathOverlay" style="display:none;">
+    <div class="stat" id="deathScore">0m</div>
+    <div class="statlabel">Distance Run</div>
+    <button class="btn" id="retryBtn">Run Again</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const hintEl = document.getElementById('hint');
+  const startOverlay = document.getElementById('startOverlay');
+  const deathOverlay = document.getElementById('deathOverlay');
+  const deathScoreEl = document.getElementById('deathScore');
+  const startBtn = document.getElementById('startBtn');
+  const retryBtn = document.getElementById('retryBtn');
+
+  let W, H, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = canvas.clientWidth = window.innerWidth;
+    H = canvas.clientHeight = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Game constants ----------
+  const GRAVITY = 2200;          // px/s^2
+  const RUNNER_R = 16;
+  const RUNNER_SCREEN_X_RATIO = 0.28;
+  const PLATFORM_H = 16;
+  const PLATFORM_LEN = 150;
+  const MIN_RUN_SPEED = 200;
+  const MAX_RUN_SPEED = 480;
+  const SPEEDUP_RATE = 2.2;      // px/s^2 growth of run speed
+  const MIN_GAP_AHEAD = 30;      // min world-x gap ahead of runner for a new platform
+  const GROUND_Y_MAX_RATIO = 0.88; // lowest allowed platform y
+
+  const OBSTACLE_W = 34;
+  const OBSTACLE_H = 30;
+  const OBSTACLE_FIRST_DIST = 550;   // world-x of first obstacle, past the start
+  const OBSTACLE_GAP_START = 480;    // initial spacing between obstacles
+  const OBSTACLE_GAP_MIN = 230;      // spacing floor as difficulty ramps
+  const OBSTACLE_GAP_SHRINK = 4;     // shrink per obstacle spawned
+
+  const BEST_KEY = 'pathrunner_best';
+
+  let state = 'idle'; // idle | playing | dead
+  let runner, platforms, camX, runSpeed, elapsed, best;
+  let particles, obstacles, nextObstacleX, obstacleGap;
+
+  function loadBest(){
+    try { return parseInt(localStorage.getItem(BEST_KEY) || '0', 10) || 0; }
+    catch(e){ return 0; }
+  }
+  function saveBest(v){
+    try { localStorage.setItem(BEST_KEY, String(v)); } catch(e){}
+  }
+  best = loadBest();
+  bestEl.textContent = 'Best: ' + best + 'm';
+
+  function resetGame(){
+    const screenX = W * RUNNER_SCREEN_X_RATIO;
+    const groundY = H * 0.62;
+    runner = {
+      worldX: screenX,
+      y: groundY,
+      vy: 0,
+      onGround: true,
+      angle: 0
+    };
+    camX = 0;
+    runSpeed = MIN_RUN_SPEED;
+    elapsed = 0;
+    particles = [];
+    // starting platform under the runner
+    platforms = [
+      { xStart: screenX - 80, xEnd: screenX + 90, y: groundY + RUNNER_R }
+    ];
+
+    obstacles = [];
+    nextObstacleX = screenX + OBSTACLE_FIRST_DIST;
+    obstacleGap = OBSTACLE_GAP_START;
+  }
+
+  function spawnObstacles(){
+    // keep spawning obstacles while there's one due within the visible/plannable horizon
+    const horizon = runner.worldX + W * 1.1;
+    while(nextObstacleX < horizon){
+      const y = H*0.28 + Math.random() * (H*GROUND_Y_MAX_RATIO - H*0.28) - OBSTACLE_H;
+      obstacles.push({
+        x: nextObstacleX,
+        y: y,
+        w: OBSTACLE_W,
+        h: OBSTACLE_H,
+        bob: Math.random()*Math.PI*2
+      });
+      obstacleGap = Math.max(OBSTACLE_GAP_MIN, obstacleGap - OBSTACLE_GAP_SHRINK);
+      nextObstacleX += obstacleGap + Math.random()*90;
+    }
+    // trim obstacles far behind camera
+    if(obstacles.length > 30){
+      obstacles = obstacles.filter(o => o.x + o.w > camX - 200);
+    }
+  }
+
+  function checkObstacleCollision(){
+    for(const o of obstacles){
+      const cx = Math.max(o.x, Math.min(runner.worldX, o.x + o.w));
+      const cy = Math.max(o.y, Math.min(runner.y, o.y + o.h));
+      const dx = runner.worldX - cx;
+      const dy = runner.y - cy;
+      if(dx*dx + dy*dy < (RUNNER_R*0.72)*(RUNNER_R*0.72)){
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function worldToScreenX(wx){ return wx - camX; }
+
+  function furthestPlatformEnd(){
+    let m = -Infinity;
+    for(const p of platforms) if(p.xEnd > m) m = p.xEnd;
+    return m;
+  }
+
+  function placePlatform(clientX, clientY){
+    if(state !== 'playing') return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+
+    let startWorldX = Math.max(furthestPlatformEnd(), runner.worldX + MIN_GAP_AHEAD);
+    // don't allow placing absurdly far ahead by tapping far right; clamp start reasonably
+    const maxAhead = runner.worldX + W * 0.9;
+    if(startWorldX > maxAhead) startWorldX = maxAhead;
+
+    let y = sy;
+    y = Math.max(H*0.18, Math.min(H*GROUND_Y_MAX_RATIO, y));
+
+    platforms.push({
+      xStart: startWorldX,
+      xEnd: startWorldX + PLATFORM_LEN,
+      y: y
+    });
+
+    // trim old platforms behind camera to keep array small
+    if(platforms.length > 40){
+      platforms = platforms.filter(p => p.xEnd > camX - 200);
+    }
+
+    // little spawn puff
+    for(let i=0;i<6;i++){
+      particles.push({
+        x: worldToScreenX(startWorldX) + Math.random()*20,
+        y: y,
+        vx: (Math.random()-0.5)*60,
+        vy: -Math.random()*90,
+        life: 0.5,
+        maxLife: 0.5,
+        color: 'rgba(62,230,196,0.9)'
+      });
+    }
+    hintEl.style.display = 'none';
+  }
+
+  function findSupport(){
+    // returns platform that supports runner right now, if any
+    for(const p of platforms){
+      if(runner.worldX + RUNNER_R*0.6 > p.xStart && runner.worldX - RUNNER_R*0.6 < p.xEnd){
+        if(runner.y + RUNNER_R >= p.y && runner.y + RUNNER_R <= p.y + 40 && runner.vy >= 0){
+          return p;
+        }
+      }
+    }
+    return null;
+  }
+
+  function update(dt){
+    elapsed += dt;
+    runSpeed = Math.min(MAX_RUN_SPEED, runSpeed + SPEEDUP_RATE*dt);
+
+    runner.worldX += runSpeed * dt;
+    camX = runner.worldX - W * RUNNER_SCREEN_X_RATIO;
+
+    // gravity
+    runner.vy += GRAVITY * dt;
+    runner.y += runner.vy * dt;
+
+    const support = findSupport();
+    if(support){
+      runner.y = support.y - RUNNER_R;
+      runner.vy = 0;
+      runner.onGround = true;
+    } else {
+      runner.onGround = false;
+    }
+
+    runner.angle = runner.onGround ? Math.sin(elapsed*14)*0.18 : Math.min(0.6, runner.vy*0.001);
+
+    // particles
+    for(const pt of particles){
+      pt.x += pt.vx*dt; pt.y += pt.vy*dt; pt.vy += 500*dt;
+      pt.life -= dt;
+    }
+    particles = particles.filter(p=>p.life>0);
+
+    spawnObstacles();
+
+    // obstacle collision
+    if(checkObstacleCollision()){
+      die();
+      return;
+    }
+
+    // death check
+    if(runner.y - RUNNER_R > H + 60){
+      die();
+    }
+  }
+
+  function die(){
+    if(state !== 'playing') return;
+    state = 'dead';
+    const sx = worldToScreenX(runner.worldX);
+    for(let i=0;i<16;i++){
+      const ang = Math.random()*Math.PI*2;
+      const spd = 60 + Math.random()*180;
+      particles.push({
+        x: sx, y: runner.y,
+        vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd,
+        life: 0.6, maxLife: 0.6,
+        color: Math.random() > 0.5 ? 'rgba(255,93,162,0.9)' : 'rgba(255,77,77,0.9)'
+      });
+    }
+    const dist = Math.floor((runner.worldX - W*RUNNER_SCREEN_X_RATIO)/10);
+    if(dist > best){ best = dist; saveBest(best); }
+    deathScoreEl.textContent = dist + 'm';
+    bestEl.textContent = 'Best: ' + best + 'm';
+    setTimeout(()=>{ deathOverlay.style.display = 'flex'; }, 350);
+  }
+
+  // ---------- Drawing ----------
+  function drawBackground(){
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, '#1b1035');
+    g.addColorStop(1, '#3a1d5c');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // parallax hills
+    ctx.save();
+    const hillOffset = (camX*0.15) % (W+400);
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    for(let i=-1;i<3;i++){
+      const bx = i*400 - hillOffset;
+      ctx.beginPath();
+      ctx.ellipse(bx+200, H*0.75, 260, 120, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // stars
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for(let i=0;i<40;i++){
+      const sx = (i*97 - camX*0.05) % (W+50);
+      const sy = (i*53) % (H*0.5);
+      ctx.fillRect(((sx%W)+W)%W, sy, 2, 2);
+    }
+  }
+
+  function drawPlatforms(){
+    for(const p of platforms){
+      const sx = worldToScreenX(p.xStart);
+      const ex = worldToScreenX(p.xEnd);
+      if(ex < -20 || sx > W+20) continue;
+      const w = ex - sx;
+
+      // shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(sx, p.y + PLATFORM_H, w, 8);
+
+      const grad = ctx.createLinearGradient(0,p.y,0,p.y+PLATFORM_H);
+      grad.addColorStop(0,'#8a6ff0');
+      grad.addColorStop(1,'#5b3ea8');
+      ctx.fillStyle = grad;
+      roundRect(sx, p.y, w, PLATFORM_H, 6);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(sx+3, p.y+2, Math.max(0,w-6), 3);
+    }
+  }
+
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function drawObstacles(){
+    for(const o of obstacles){
+      const sx = worldToScreenX(o.x);
+      if(sx + o.w < -30 || sx > W+30) continue;
+      const bobY = Math.sin(elapsed*3 + o.bob) * 3;
+      const top = o.y + bobY;
+
+      // glow
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(255,77,77,0.22)';
+      ctx.ellipse(sx + o.w/2, top + o.h/2, o.w*0.9, o.h*0.7, 0, 0, Math.PI*2);
+      ctx.fill();
+
+      // spike cluster
+      const spikes = 3;
+      const sw = o.w / spikes;
+      const grad = ctx.createLinearGradient(0, top, 0, top+o.h);
+      grad.addColorStop(0, '#ff8a6b');
+      grad.addColorStop(1, '#ff4d4d');
+      ctx.fillStyle = grad;
+      for(let i=0;i<spikes;i++){
+        ctx.beginPath();
+        ctx.moveTo(sx + i*sw, top + o.h);
+        ctx.lineTo(sx + i*sw + sw/2, top);
+        ctx.lineTo(sx + i*sw + sw, top + o.h);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+
+  function drawRunner(){
+    const sx = worldToScreenX(runner.worldX);
+    const sy = runner.y;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(runner.angle);
+
+    // glow trail
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(255,93,162,0.25)';
+    ctx.ellipse(0, RUNNER_R*0.8, RUNNER_R*1.3, RUNNER_R*0.5, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // body
+    const bodyGrad = ctx.createLinearGradient(-RUNNER_R,-RUNNER_R,RUNNER_R,RUNNER_R);
+    bodyGrad.addColorStop(0,'#ff8fc0');
+    bodyGrad.addColorStop(1,'#ff5da2');
+    ctx.beginPath();
+    ctx.fillStyle = bodyGrad;
+    ctx.arc(0,0,RUNNER_R,0,Math.PI*2);
+    ctx.fill();
+
+    // face
+    ctx.fillStyle = '#1b1035';
+    ctx.beginPath();
+    ctx.arc(5,-4,2.3,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawParticles(){
+    for(const p of particles){
+      ctx.globalAlpha = Math.max(0, p.life/p.maxLife);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawFallWarning(){
+    if(state!=='playing') return;
+    // if runner has no ground under it currently and no platform ahead within reach, flash edge
+    const support = findSupport();
+    if(!support && runner.vy > 300){
+      ctx.fillStyle = 'rgba(255,77,77,0.12)';
+      ctx.fillRect(0,0,W,H);
+    }
+  }
+
+  function render(){
+    drawBackground();
+    drawPlatforms();
+    drawObstacles();
+    drawParticles();
+    drawRunner();
+    drawFallWarning();
+  }
+
+  // ---------- Loop ----------
+  let lastT = null;
+  function loop(t){
+    if(lastT === null) lastT = t;
+    let dt = (t - lastT)/1000;
+    dt = Math.min(dt, 0.033); // clamp for tab-switch lag
+    lastT = t;
+
+    if(state === 'playing'){
+      update(dt);
+      const dist = Math.floor((runner.worldX - W*RUNNER_SCREEN_X_RATIO)/10);
+      scoreEl.textContent = dist + 'm';
+    }
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- Input ----------
+  function onTap(e){
+    e.preventDefault();
+    let clientX, clientY;
+    if(e.changedTouches && e.changedTouches.length){
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = e.clientX; clientY = e.clientY;
+    }
+    if(state === 'playing'){
+      placePlatform(clientX, clientY);
+    }
+  }
+  canvas.addEventListener('touchstart', onTap, {passive:false});
+  canvas.addEventListener('mousedown', onTap);
+
+  function startGame(){
+    resize();
+    resetGame();
+    state = 'playing';
+    startOverlay.style.display = 'none';
+    deathOverlay.style.display = 'none';
+    hintEl.style.display = 'block';
+    lastT = null;
+  }
+
+  startBtn.addEventListener('click', startGame);
+  retryBtn.addEventListener('click', startGame);
+
+  // initial idle render
+  resetGame();
+  render();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
